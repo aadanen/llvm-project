@@ -5027,6 +5027,48 @@ void Verifier::visitCatchPadInst(CatchPadInst &CPI) {
                      }),
         "Argument operand must be alloca or constant.", &CPI);
 
+  EHPersonality Personality = classifyEHPersonality(F->getPersonalityFn());
+    if (Personality == EHPersonality::MSVC_CXX) {
+    Check(CPI.arg_size() == 3,
+          "MSVC C++ catchpad must have exactly 3 arguments", &CPI);
+      Check(isa<Constant>(CPI.getArgOperand(0)),
+        "MSVC C++ catchpad first argument must be a constant", &CPI,
+        CPI.getArgOperand(0));
+      if (CPI.arg_size() >= 1 && isa<Constant>(CPI.getArgOperand(0))) {
+    Constant *TypeInfo = cast<Constant>(CPI.getArgOperand(0));
+    Check(TypeInfo->isNullValue() ||
+          isa<GlobalVariable>(TypeInfo->stripPointerCasts()),
+      "MSVC C++ catchpad first argument must be null or a type descriptor"
+      " global",
+      &CPI, CPI.getArgOperand(0));
+      }
+      Check(isa<ConstantInt>(CPI.getArgOperand(1)) &&
+        cast<ConstantInt>(CPI.getArgOperand(1))->getType()->isIntegerTy(32),
+        "MSVC C++ catchpad second argument must be an i32 constant", &CPI,
+        CPI.getArgOperand(1));
+      Value *CatchObj = CPI.getArgOperand(2)->stripPointerCasts();
+      Check(isa<AllocaInst>(CatchObj) ||
+        (isa<Constant>(CatchObj) && cast<Constant>(CatchObj)->isNullValue()),
+        "MSVC C++ catchpad third argument must be an alloca or null", &CPI,
+        CPI.getArgOperand(2));
+    } else if (Personality == EHPersonality::MSVC_TableSEH) {
+      Check(CPI.arg_size() >= 1,
+        "MSVC SEH catchpad must have at least 1 argument", &CPI);
+      Check(isa<Constant>(CPI.getArgOperand(0)),
+        "MSVC SEH catchpad first argument must be a constant", &CPI,
+        CPI.getArgOperand(0));
+    } else if (Personality == EHPersonality::CoreCLR) {
+      Check(CPI.arg_size() >= 1,
+        "CoreCLR catchpad must have at least 1 argument", &CPI);
+      Check(isa<ConstantInt>(CPI.getArgOperand(0)),
+        "CoreCLR catchpad first argument must be an i32 constant", &CPI,
+        CPI.getArgOperand(0));
+      if (CPI.arg_size() >= 1 && isa<ConstantInt>(CPI.getArgOperand(0)))
+    Check(cast<ConstantInt>(CPI.getArgOperand(0))->getType()->isIntegerTy(32),
+      "CoreCLR catchpad first argument must be an i32 constant", &CPI,
+      CPI.getArgOperand(0));
+  }
+
   visitEHPadPredecessors(CPI);
   visitFuncletPadInst(CPI);
 }

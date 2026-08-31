@@ -17,7 +17,7 @@ entry:
 catchpad:
   %cs1 = catchswitch within none [label %do_catch] unwind to caller
 do_catch:
-  %catch = catchpad within %cs1 [i32 1]
+  %catch = catchpad within %cs1 [ptr null, i32 0, ptr null]
   %exn = call ptr @llvm.eh.exceptionpointer.p0(token %catch)
   call void (...) @f(ptr %exn)
   catchret from %catch to label %exit

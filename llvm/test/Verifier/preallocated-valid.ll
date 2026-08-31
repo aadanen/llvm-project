@@ -67,7 +67,7 @@ conta:
 contb:
     %s = catchswitch within none [label %catch] unwind to caller
 catch:
-    %p = catchpad within %s []
+    %p = catchpad within %s [ptr null, i32 0, ptr null]
     call void @llvm.call.preallocated.teardown(token %cs)
     ret void
 }
