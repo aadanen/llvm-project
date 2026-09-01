@@ -162,12 +162,33 @@ static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
   assert(TBME.TryLow <= TBME.TryHigh);
   for (const CatchPadInst *CPI : Handlers) {
     WinEHHandlerType HT;
-    Constant *TypeInfo = cast<Constant>(CPI->getArgOperand(0));
-    if (TypeInfo->isNullValue())
+
+    if (CPI->arg_size() != 3)
+      reportFatalUsageError("MSVC++ catchpad requires 3 arguments");
+
+    Constant *TypeInfo;
+    if (!(TypeInfo = dyn_cast<Constant>(CPI->getArgOperand(0))))
+      reportFatalUsageError(
+          "MSVC++ catchpad first argument must be a Constant");
+
+    if (TypeInfo->isNullValue()) {
       HT.TypeDescriptor = nullptr;
-    else
-      HT.TypeDescriptor = cast<GlobalVariable>(TypeInfo->stripPointerCasts());
-    HT.Adjectives = cast<ConstantInt>(CPI->getArgOperand(1))->getZExtValue();
+    } else {
+      GlobalVariable *TypeDescriptor;
+      if (!(TypeDescriptor =
+                dyn_cast<GlobalVariable>(TypeInfo->stripPointerCasts())))
+        reportFatalUsageError(
+            "MSVC++ catchpad first argument must be null or point to a "
+            "global variable");
+      HT.TypeDescriptor = TypeDescriptor;
+    }
+
+    ConstantInt *Adjectives;
+    if (!(Adjectives = dyn_cast<ConstantInt>(CPI->getArgOperand(1))))
+      reportFatalUsageError(
+          "MSVC++ catchpad second argument must be a ConstantInt");
+    HT.Adjectives = Adjectives->getZExtValue();
+
     HT.Handler = CPI->getParent();
     if (auto *AI =
             dyn_cast<AllocaInst>(CPI->getArgOperand(2)->stripPointerCasts()))
@@ -184,6 +205,22 @@ static BasicBlock *getCleanupRetUnwindDest(const CleanupPadInst *CleanupPad) {
     if (const auto *CRI = dyn_cast<CleanupReturnInst>(U))
       return CRI->getUnwindDest();
   return nullptr;
+}
+
+static const Function *getSEHFilterOrNull(const CatchPadInst *CatchPad) {
+  if (CatchPad->arg_size() < 1)
+    reportFatalUsageError("SEH catchpad requires at least 1 argument");
+
+  Constant *FilterOrNull;
+  if (!(FilterOrNull =
+            dyn_cast<Constant>(CatchPad->getArgOperand(0)->stripPointerCasts())))
+    reportFatalUsageError("SEH catchpad argument must be a Constant");
+
+  const Function *Filter = dyn_cast<Function>(FilterOrNull);
+  if (!Filter && !FilterOrNull->isNullValue())
+    reportFatalUsageError(
+        "SEH catchpad argument must be null or a function");
+  return Filter;
 }
 
 static void calculateStateNumbersForInvokes(const Function *Fn,
@@ -324,9 +361,7 @@ void llvm::calculateSEHStateForAsynchEH(const BasicBlock *BB, int State,
     EHInfo.BlockToStateMap[BB] = State; // Record state
 
     if (isa<CatchPadInst>(It) && isa<CatchReturnInst>(TI)) {
-      const Constant *FilterOrNull = cast<Constant>(
-          cast<CatchPadInst>(It)->getArgOperand(0)->stripPointerCasts());
-      const Function *Filter = dyn_cast<Function>(FilterOrNull);
+      const Function *Filter = getSEHFilterOrNull(cast<CatchPadInst>(It));
       if (!Filter || !Filter->getName().starts_with("__IsLocalUnwind"))
         State = EHInfo.SEHUnwindMap[State].ToState; // Retrive next State
     } else if ((isa<CleanupReturnInst>(TI) || isa<CatchReturnInst>(TI)) &&
@@ -514,11 +549,7 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
     const auto *CatchPad =
         cast<CatchPadInst>((*CatchSwitch->handler_begin())->getFirstNonPHIIt());
     const BasicBlock *CatchPadBB = CatchPad->getParent();
-    const Constant *FilterOrNull =
-        cast<Constant>(CatchPad->getArgOperand(0)->stripPointerCasts());
-    const Function *Filter = dyn_cast<Function>(FilterOrNull);
-    assert((Filter || FilterOrNull->isNullValue()) &&
-           "unexpected filter value");
+    const Function *Filter = getSEHFilterOrNull(CatchPad);
     int TryState = addSEHExcept(FuncInfo, ParentState, Filter, CatchPadBB);
 
     // Everything in the __try block uses TryState as its parent state.
@@ -730,8 +761,12 @@ void llvm::calculateClrEHStateNumbers(const Function *Fn,
         // Create the entry for this catch with the appropriate handler
         // properties.
         const auto *Catch = cast<CatchPadInst>(CatchBlock->getFirstNonPHIIt());
-        uint32_t TypeToken = static_cast<uint32_t>(
-            cast<ConstantInt>(Catch->getArgOperand(0))->getZExtValue());
+        if (Catch->arg_size() != 1)
+          reportFatalUsageError("CLR catchpad requires 1 argument");
+        ConstantInt *TypeTokenC;
+        if (!(TypeTokenC = dyn_cast<ConstantInt>(Catch->getArgOperand(0))))
+          reportFatalUsageError("CLR catchpad argument must be a ConstantInt");
+        uint32_t TypeToken = static_cast<uint32_t>(TypeTokenC->getZExtValue());
         CatchState =
             addClrEHHandler(FuncInfo, HandlerParentState, FollowerState,
                             ClrHandlerType::Catch, TypeToken, CatchBlock);
